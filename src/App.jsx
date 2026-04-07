@@ -571,8 +571,9 @@ function updateGame(state, rawDt, now, activeKeys, onGameOver) {
 
   const wasBonusActive = now < state.bonusModeUntil;
 
-  state.elapsedMs += dt * 1000;
-  state.score = Math.floor((state.elapsedMs / 1000) * 10);
+    state.elapsedMs += dt * 1000;
+  const pointsPerSecond = isSlowMode ? 5 : 10;
+  state.score = Math.floor((state.elapsedMs / 1000) * pointsPerSecond);
 
   if (!wasBonusActive && state.bonusShieldQueued) {
     state.player.shieldUntil = Math.max(state.player.shieldUntil, now) + 3000;
@@ -886,7 +887,8 @@ function drawGame(ctx, state, phase, avatar, projectileImages) {
 
   ctx.fillStyle = "rgba(255,255,255,0.9)";
   ctx.font = "600 18px sans-serif";
-  ctx.fillText(`LIFE: ${state.lives}`, 22, 34);
+  const hearts = "❤️".repeat(Math.max(state.lives, 0));
+  ctx.fillText(`LIFE: ${hearts || "없음"}`, 22, 34);
   ctx.fillText(`SCORE: ${state.score}`, 22, 60);
   ctx.fillText(`TIME: ${(state.elapsedMs / 1000).toFixed(1)}s`, 22, 86);
   ctx.fillText(`SLOW: ${state.slowMode ? "ON" : "OFF"}`, 22, 112);
@@ -951,6 +953,17 @@ function runDevTests() {
 
   console.assert(normalizeKey(" ") === "Space", "space key should normalize");
   console.assert(normalizeKey("Shift") === "Shift", "shift key should stay unchanged");
+
+  const slowScoreState = createInitialGameState();
+  updateGame(slowScoreState, 1, 1000, { Space: true }, () => {});
+  console.assert(slowScoreState.score === 2, "slow mode should award 5 points per slowed second");
+
+  const shieldHeartState = createInitialGameState();
+  shieldHeartState.player.shieldUntil = 5000;
+  shieldHeartState.projectiles = [{ id: "heart-hit", kind: "heart", x: WIDTH / 2, y: HEIGHT / 2, vx: 0, vy: 0, r: HEART_RADIUS, angle: 0, spin: 0, label: "__heart" }];
+  const livesBeforeHeart = shieldHeartState.lives;
+  updateGame(shieldHeartState, 0.016, 1000, {}, () => {});
+  console.assert(shieldHeartState.lives === livesBeforeHeart + 1, "heart pickup should still increase life while shield is active");
 }
 
 if (typeof window !== "undefined") {
