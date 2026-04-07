@@ -370,7 +370,7 @@ function App() {
           <div className="flex items-center justify-between mb-4 px-2 gap-4">
             <div>
               <h1 className="text-3xl font-bold">알파벳 피하기</h1>
-              <p className="text-zinc-400 text-sm mt-1">Shift는 가속, Space는 슬로우 모드입니다.</p>
+              <p className="text-zinc-400 text-sm mt-1">[Shift] 가속, [Space] 슬로우 모드입니다.</p>
             </div>
             <button
               onClick={startGame}
