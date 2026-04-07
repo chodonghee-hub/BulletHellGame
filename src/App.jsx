@@ -109,6 +109,20 @@ function App() {
               </a>
             </li>
           </ul>
+          <ul>
+            <li>
+              <a href="https://github.com/chodonghee-hub" target="_blank">
+                <svg
+                  className="button-icon"
+                  role="presentation"
+                  aria-hidden="true"
+                >
+                  <use href="/icons.svg#github-icon"></use>
+                </svg>
+                chodonghee-hub
+              </a>
+            </li>
+          </ul>
         </div>
       </section>
 
