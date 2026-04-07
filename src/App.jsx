@@ -370,7 +370,7 @@ function App() {
           <div className="flex items-center justify-between mb-4 px-2 gap-4">
             <div>
               <h1 className="text-3xl font-bold">알파벳 피하기</h1>
-              <p className="text-zinc-400 text-sm mt-1">[Shift] 가속, [Space] 슬로우 모드입니다.</p>
+              <p className="text-zinc-400 text-sm mt-1">Shift는 가속, Space는 슬로우 모드입니다.</p>
             </div>
             <button
               onClick={startGame}
@@ -886,7 +886,8 @@ function drawGame(ctx, state, phase, avatar, projectileImages) {
 
   ctx.fillStyle = "rgba(255,255,255,0.9)";
   ctx.font = "600 18px sans-serif";
-  ctx.fillText(`LIFE: ${state.lives}`, 22, 34);
+  const hearts = "❤️".repeat(Math.max(state.lives, 0));
+  ctx.fillText(`LIFE: ${hearts || "없음"}`, 22, 34);
   ctx.fillText(`SCORE: ${state.score}`, 22, 60);
   ctx.fillText(`TIME: ${(state.elapsedMs / 1000).toFixed(1)}s`, 22, 86);
   ctx.fillText(`SLOW: ${state.slowMode ? "ON" : "OFF"}`, 22, 112);
