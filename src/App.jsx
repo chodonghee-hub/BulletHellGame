@@ -4,7 +4,7 @@ const AVATAR = "/mnt/data/submarine.jpg";
 
 const WIDTH = 1000;
 const HEIGHT = 600;
-const PLAYER_SIZE = 400;
+const PLAYER_SIZE = 40;
 const PROJECTILE_RADIUS = 24;
 const INITIAL_LIVES = 5;
 const MAX_LIVES = 10;
