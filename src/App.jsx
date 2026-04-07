@@ -15,6 +15,14 @@ const RAINBOW_RADIUS = 20;
 const BONUS_PATTERN_DURATION = 5000;
 const BONUS_ENTRY_COST = 5;
 const BONUS_COLLISION_SCORE = 30;
+const INITIAL_SKILL_COUNT = 3;
+const SKILL_RADIUS = 18;
+const DASH_DISTANCE = 120;
+const DASH_TRAIL_MS = 180;
+const SHIELD_DURATION_MS = 3000;
+const HIT_INVINCIBLE_MS = 1500;
+const SLOW_MODE_MAX_MS = 5000;
+const HEART_POPUP_MS = 300;
 const RAINBOW_COLORS = ["#ef4444", "#f97316", "#eab308", "#22c55e", "#3b82f6", "#8b5cf6"];
 
 const LANGUAGES = [
@@ -123,6 +131,18 @@ function createRainbowDataUrl() {
   return `data:image/svg+xml;charset=UTF-8,${encodeURIComponent(svg)}`;
 }
 
+function createSkillDataUrl() {
+  const svg = `
+    <svg xmlns="http://www.w3.org/2000/svg" width="72" height="72" viewBox="0 0 72 72">
+      <circle cx="36" cy="36" r="31" fill="#0f172a" stroke="rgba(255,255,255,0.22)" stroke-width="2" />
+      <path d="M16 40c11-3 23-13 30-24 5 8 7 17 6 24-1 7-5 13-12 18-8-1-16-6-24-18Z" fill="#7dd3fc"/>
+      <path d="M23 41c7-2 14-8 19-16" stroke="#ecfeff" stroke-width="4" stroke-linecap="round"/>
+      <path d="M18 48l-6 4M26 52l-5 6M33 55l-3 7" stroke="#e0f2fe" stroke-width="3" stroke-linecap="round"/>
+    </svg>
+  `;
+  return `data:image/svg+xml;charset=UTF-8,${encodeURIComponent(svg)}`;
+}
+
 function makeImage(src) {
   const img = new Image();
   img.src = src;
@@ -137,6 +157,7 @@ function buildProjectileImages() {
   result.__heart = makeImage(createHeartDataUrl());
   result.__shield = makeImage(createShieldDataUrl());
   result.__rainbow = makeImage(createRainbowDataUrl());
+  result.__skill = makeImage(createSkillDataUrl());
   return result;
 }
 
@@ -182,10 +203,10 @@ function createPickup(kind, elapsedMs) {
   const dx = centerX - spawn.x + (Math.random() - 0.5) * 180;
   const dy = centerY - spawn.y + (Math.random() - 0.5) * 180;
   const len = Math.hypot(dx, dy) || 1;
-  const baseSpeed = kind === "heart" ? 95 : kind === "shield" ? 105 : 115;
+  const baseSpeed = kind === "heart" ? 95 : kind === "shield" ? 105 : kind === "skill" ? 110 : 115;
   const speed = baseSpeed * Math.min(1 + elapsedMs / 40000, 1.6);
-  const r = kind === "heart" ? HEART_RADIUS : kind === "shield" ? SHIELD_RADIUS : RAINBOW_RADIUS;
-  const label = kind === "heart" ? "__heart" : kind === "shield" ? "__shield" : "__rainbow";
+  const r = kind === "heart" ? HEART_RADIUS : kind === "shield" ? SHIELD_RADIUS : kind === "skill" ? SKILL_RADIUS : RAINBOW_RADIUS;
+  const label = kind === "heart" ? "__heart" : kind === "shield" ? "__shield" : kind === "skill" ? "__skill" : "__rainbow";
 
   return {
     id: Math.random().toString(36).slice(2),
@@ -209,8 +230,11 @@ function createInitialGameState() {
       size: PLAYER_SIZE,
       invincibleUntil: 0,
       shieldUntil: 0,
+      dashTrailUntil: 0,
+      dashTrailAngle: 0,
     },
     projectiles: [],
+    popups: [],
     lives: INITIAL_LIVES,
     score: 0,
     elapsedMs: 0,
@@ -218,12 +242,16 @@ function createInitialGameState() {
     heartSpawnTimer: 0,
     shieldSpawnTimer: 0,
     rainbowSpawnTimer: 0,
+    skillSpawnTimer: 0,
     running: false,
     endingMessage: randomItem(END_MESSAGES),
     slowMode: false,
+    slowModeMeterMs: SLOW_MODE_MAX_MS,
     rainbowTextUntil: 0,
     bonusModeUntil: 0,
     bonusShieldQueued: false,
+    skillCount: INITIAL_SKILL_COUNT,
+    shiftPressedLastFrame: false,
   };
 }
 
@@ -314,7 +342,7 @@ function App() {
       if (phase === "playing" && state.running) {
         updateGame(state, rawDt, now, keysRef.current, () => {
           state.running = false;
-          setFinalScore(state.score);
+          setFinalScore(Math.floor(state.score));
           setFinalTime(state.elapsedMs / 1000);
           setFinalEndingMessage(state.endingMessage);
           setPhase("gameover");
@@ -354,7 +382,7 @@ function App() {
     const trimmed = rankingName.trim().slice(0, NAME_LIMIT);
     if (!trimmed) return;
 
-    const updated = [...leaderboard, { name: trimmed, score: finalScore, time: finalTime }]
+    const updated = [...leaderboard, { name: trimmed, score: Math.floor(finalScore), time: finalTime }]
       .sort((a, b) => b.score - a.score)
       .slice(0, 10);
 
@@ -370,7 +398,7 @@ function App() {
           <div className="flex items-center justify-between mb-4 px-2 gap-4">
             <div>
               <h1 className="text-3xl font-bold">알파벳 피하기</h1>
-              <p className="text-zinc-400 text-sm mt-1">Shift는 가속, Space는 슬로우 모드입니다.</p>
+              <p className="text-zinc-400 text-sm mt-1">Shift는 대시, Space는 슬로우 모드입니다.</p>
             </div>
             <button
               onClick={startGame}
@@ -398,7 +426,7 @@ function App() {
             </p>
           )}
           <p className="text-xs text-zinc-500 mt-2 px-1">
-            Shift + 방향키: 가속 이동 / Space: 시간과 탄막, 플레이어 모두 감속 / 하트: 라이프 +1 / 실드: 3초 무적 / 무지개: 화면 탄막 제거 / 라이프 10: 히든 보너스 패턴
+            Shift + 방향키: 대시 스킬 / Space: 시간과 탄막, 플레이어 모두 감속 / 하트: 라이프 +1 / 실드: 3초 무적 / 무지개: 화면 탄막 제거 / 스킬 탄막: 대시 +1 / 라이프 10: 히든 보너스 패턴
           </p>
         </div>
 
@@ -412,10 +440,12 @@ function App() {
               <p>• 보너스 패턴 중에는 충돌할 때마다 점수 30점을 획득하고 라이프는 줄지 않습니다.</p>
               <p>• 보너스 패턴 종료 후에는 실드 효과가 3초 동안 유지됩니다.</p>
               <p>• 프로그래밍 언어별 이미지 탄막을 피해야 합니다.</p>
-              <p>• Shift를 누른 채 이동하면 이동 속도가 증가합니다.</p>
-              <p>• Space를 누르면 플레이어, 탄막, 시간 흐름이 모두 느려집니다.</p>
-              <p>• 하트 이미지를 먹으면 라이프가 1 증가합니다.</p>
-              <p>• 실드 이미지를 먹으면 3초 동안 무적이고 노란 그림자가 강하게 생깁니다.</p>
+              <p>• Shift를 누르면 현재 이동 방향으로 짧은 거리 대시합니다.</p>
+              <p>• 대시 시작 횟수는 {INITIAL_SKILL_COUNT}번이며, 스카이블루 스킬 탄막을 먹으면 1회 충전됩니다.</p>
+              <p>• Space는 시작 시 5초 충전 상태이며, 사용 중 소모되고 꺼져 있을 때 다시 충전됩니다.</p>
+              <p>• 하트 이미지를 먹으면 라이프가 1 증가하고 ❤️+1 팝업이 뜹니다.</p>
+              <p>• 실드 이미지를 먹으면 3초 동안 무적이고 노란 그림자와 타이머 링이 생깁니다.</p>
+              <p>• 피격 시 1.5초간 깜빡이며 무적이고 노란 타이머 링이 표시됩니다.</p>
               <p>• 무지개 이미지를 먹으면 RAINBOW 텍스트가 뜨고 현재 화면의 일반 탄막이 모두 제거됩니다.</p>
               <p>• 플레이 중에는 다시하기 버튼이 비활성화됩니다.</p>
             </div>
@@ -447,7 +477,7 @@ function App() {
                       <span>{item.name}</span>
                     </div>
                     <div className="text-right">
-                      <div className="font-semibold">{item.score}점</div>
+                      <div className="font-semibold">{Math.floor(item.score)}점</div>
                       <div className="text-zinc-400 text-xs">{item.time.toFixed(1)}초</div>
                     </div>
                   </div>
@@ -464,7 +494,7 @@ function App() {
             <h2 className="text-2xl font-bold mb-2">게임 종료</h2>
             <p className="text-zinc-200 mb-3 leading-7">{finalEndingMessage}</p>
             <p className="text-zinc-300 mb-1">생존 시간: {finalTime.toFixed(1)}초</p>
-            <p className="text-zinc-300 mb-4">최종 점수: {finalScore}점</p>
+            <p className="text-zinc-300 mb-4">최종 점수: {Math.floor(finalScore)}점</p>
             <label className="block text-sm text-zinc-400 mb-2">플레이어 이름</label>
             <input
               value={rankingName}
@@ -501,10 +531,13 @@ function normalizeKey(key) {
 
 function StatusPanel({ phase, state, finalScore, finalTime }) {
   const lives = phase === "gameover" ? 0 : state.lives;
-  const score = phase === "gameover" ? finalScore : state.score;
+  const score = phase === "gameover" ? Math.floor(finalScore) : Math.floor(state.score);
   const time = phase === "gameover" ? finalTime : state.elapsedMs / 1000;
-  const shieldLeft = Math.max(0, (state.player.shieldUntil - performance.now()) / 1000);
-  const bonusLeft = Math.max(0, (state.bonusModeUntil - performance.now()) / 1000);
+  const now = performance.now();
+  const shieldLeft = Math.max(0, (state.player.shieldUntil - now) / 1000);
+  const bonusLeft = Math.max(0, (state.bonusModeUntil - now) / 1000);
+  const hitInvincibleLeft = Math.max(0, (state.player.invincibleUntil - now) / 1000);
+  const slowLeft = Math.max(0, state.slowModeMeterMs / 1000);
 
   return (
     <div className="space-y-3 text-sm">
@@ -529,8 +562,20 @@ function StatusPanel({ phase, state, finalScore, finalTime }) {
         <span>{state.slowMode ? "활성" : "비활성"}</span>
       </div>
       <div className="flex items-center justify-between">
+        <span className="text-zinc-400">슬로우 충전</span>
+        <span>{slowLeft.toFixed(1)} / 5.0초</span>
+      </div>
+      <div className="flex items-center justify-between">
+        <span className="text-zinc-400">대시 횟수</span>
+        <span>{state.skillCount}</span>
+      </div>
+      <div className="flex items-center justify-between">
         <span className="text-zinc-400">실드</span>
         <span>{shieldLeft > 0 ? `${shieldLeft.toFixed(1)}초` : "없음"}</span>
+      </div>
+      <div className="flex items-center justify-between">
+        <span className="text-zinc-400">피격 무적</span>
+        <span>{hitInvincibleLeft > 0 ? `${hitInvincibleLeft.toFixed(1)}초` : "없음"}</span>
       </div>
       <div className="flex items-center justify-between">
         <span className="text-zinc-400">보너스 패턴</span>
@@ -542,14 +587,31 @@ function StatusPanel({ phase, state, finalScore, finalTime }) {
 }
 
 function updateGame(state, rawDt, now, activeKeys, onGameOver) {
-  const isSlowMode = !!activeKeys.Space;
+  state.popups = state.popups
+    .map((popup) => ({ ...popup, y: popup.y - 20 * rawDt }))
+    .filter((popup) => now < popup.until);
+
+  if (!activeKeys.Space && state.slowModeMeterMs < SLOW_MODE_MAX_MS) {
+    state.slowModeMeterMs = Math.min(SLOW_MODE_MAX_MS, state.slowModeMeterMs + rawDt * 1000);
+  }
+
+  const wantsSlowMode = !!activeKeys.Space;
+  const isSlowMode = wantsSlowMode && state.slowModeMeterMs > 0;
   state.slowMode = isSlowMode;
 
-  const timeScale = isSlowMode ? 0.42 : 1;
+  const timeScale = isSlowMode ? 0.5 : 1;
   const dt = rawDt * timeScale;
-  const shiftBoost = activeKeys.Shift ? 1.65 : 1;
+
+  if (isSlowMode) {
+    state.slowModeMeterMs = Math.max(0, state.slowModeMeterMs - rawDt * 1000);
+    if (state.slowModeMeterMs <= 0) {
+      state.slowMode = false;
+      activeKeys.Space = false;
+    }
+  }
+
   const playerBaseSpeed = 290;
-  const playerSpeed = playerBaseSpeed * shiftBoost * (isSlowMode ? 0.55 : 1);
+  const playerSpeed = playerBaseSpeed * (isSlowMode ? 0.55 : 1);
   const move = { x: 0, y: 0 };
 
   if (activeKeys.ArrowLeft) move.x -= 1;
@@ -558,6 +620,19 @@ function updateGame(state, rawDt, now, activeKeys, onGameOver) {
   if (activeKeys.ArrowDown) move.y += 1;
 
   const len = Math.hypot(move.x, move.y) || 1;
+
+  const shiftPressed = !!activeKeys.Shift;
+  if (shiftPressed && !state.shiftPressedLastFrame && state.skillCount > 0 && len > 0) {
+    const dashDx = (move.x / len) * DASH_DISTANCE;
+    const dashDy = (move.y / len) * DASH_DISTANCE;
+    state.player.x = clamp(state.player.x + dashDx, state.player.size / 2, WIDTH - state.player.size / 2);
+    state.player.y = clamp(state.player.y + dashDy, state.player.size / 2, HEIGHT - state.player.size / 2);
+    state.player.dashTrailUntil = now + DASH_TRAIL_MS;
+    state.player.dashTrailAngle = Math.atan2(move.y, move.x);
+    state.skillCount -= 1;
+  }
+  state.shiftPressedLastFrame = shiftPressed;
+
   state.player.x = clamp(
     state.player.x + (move.x / len) * playerSpeed * rawDt,
     state.player.size / 2,
@@ -571,12 +646,12 @@ function updateGame(state, rawDt, now, activeKeys, onGameOver) {
 
   const wasBonusActive = now < state.bonusModeUntil;
 
-    state.elapsedMs += dt * 1000;
+  state.elapsedMs += dt * 1000;
   const pointsPerSecond = isSlowMode ? 5 : 10;
-  state.score = Math.floor((state.elapsedMs / 1000) * pointsPerSecond);
+  state.score += rawDt * pointsPerSecond;
 
   if (!wasBonusActive && state.bonusShieldQueued) {
-    state.player.shieldUntil = Math.max(state.player.shieldUntil, now) + 3000;
+    state.player.shieldUntil = Math.max(state.player.shieldUntil, now) + SHIELD_DURATION_MS;
     state.bonusShieldQueued = false;
   }
 
@@ -611,6 +686,12 @@ function updateGame(state, rawDt, now, activeKeys, onGameOver) {
   if (state.rainbowSpawnTimer >= 17.5) {
     state.rainbowSpawnTimer = 0;
     state.projectiles.push(createPickup("rainbow", state.elapsedMs));
+  }
+
+  state.skillSpawnTimer += dt;
+  if (state.skillSpawnTimer >= 11.5) {
+    state.skillSpawnTimer = 0;
+    state.projectiles.push(createPickup("skill", state.elapsedMs));
   }
 
   state.projectiles = state.projectiles
@@ -649,11 +730,24 @@ function updateGame(state, rawDt, now, activeKeys, onGameOver) {
 
     if (projectile.kind === "heart") {
       state.lives = Math.min(MAX_LIVES, state.lives + 1);
+      state.popups.push({
+        id: Math.random().toString(36).slice(2),
+        text: "❤️+1",
+        x: projectile.x,
+        y: projectile.y,
+        color: "#fb7185",
+        until: now + HEART_POPUP_MS,
+      });
       continue;
     }
 
     if (projectile.kind === "shield") {
-      state.player.shieldUntil = Math.max(state.player.shieldUntil, now) + 3000;
+      state.player.shieldUntil = Math.max(state.player.shieldUntil, now) + SHIELD_DURATION_MS;
+      continue;
+    }
+
+    if (projectile.kind === "skill") {
+      state.skillCount += 1;
       continue;
     }
 
@@ -669,7 +763,7 @@ function updateGame(state, rawDt, now, activeKeys, onGameOver) {
 
     if (now > state.player.invincibleUntil) {
       state.lives -= 1;
-      state.player.invincibleUntil = now + 1000;
+      state.player.invincibleUntil = now + HIT_INVINCIBLE_MS;
       if (state.lives <= 0) {
         state.lives = 0;
         onGameOver();
@@ -685,7 +779,39 @@ function updateGame(state, rawDt, now, activeKeys, onGameOver) {
   state.projectiles = nextProjectiles;
 }
 
-function drawFallbackPlayer(ctx, state, shieldActive) {
+function drawRectProgressBorder(ctx, color, ratio, lineWidth, inset, glow) {
+  if (ratio <= 0) return;
+  const w = WIDTH - inset * 2;
+  const h = HEIGHT - inset * 2;
+  const perimeter = 2 * (w + h);
+  ctx.save();
+  ctx.strokeStyle = color;
+  ctx.lineWidth = lineWidth;
+  ctx.setLineDash([perimeter * ratio, perimeter]);
+  ctx.lineDashOffset = 0;
+  if (glow) {
+    ctx.shadowBlur = glow;
+    ctx.shadowColor = color;
+  }
+  ctx.strokeRect(inset, inset, w, h);
+  ctx.restore();
+}
+
+function drawPlayerTimerRing(ctx, x, y, radius, ratio, color, width) {
+  if (ratio <= 0) return;
+  ctx.save();
+  ctx.strokeStyle = color;
+  ctx.lineWidth = width;
+  ctx.lineCap = "round";
+  ctx.shadowBlur = 16;
+  ctx.shadowColor = color;
+  ctx.beginPath();
+  ctx.arc(x, y, radius, -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * ratio, false);
+  ctx.stroke();
+  ctx.restore();
+}
+
+function drawFallbackPlayer(ctx, state, shieldActive, hitActive, shieldRatio, hitRatio, slowRatio) {
   const { x, y, size } = state.player;
 
   ctx.save();
@@ -693,26 +819,17 @@ function drawFallbackPlayer(ctx, state, shieldActive) {
     ctx.shadowBlur = 40;
     ctx.shadowColor = "rgba(250, 204, 21, 1)";
   }
-  ctx.fillStyle = "#fafafa";
+  ctx.fillStyle = hitActive ? "rgba(255,255,255,0.45)" : "#fafafa";
   ctx.beginPath();
   ctx.arc(x, y, size / 2, 0, Math.PI * 2);
   ctx.fill();
-  ctx.shadowBlur = 0;
+  ctx.restore();
 
-  ctx.strokeStyle = shieldActive ? "rgba(250, 204, 21, 1)" : "rgba(255,255,255,0.85)";
-  ctx.lineWidth = shieldActive ? 3 : 2;
-  ctx.beginPath();
-  ctx.arc(x, y, size / 2 + 6, 0, Math.PI * 2);
-  ctx.stroke();
+  drawPlayerTimerRing(ctx, x, y, size / 2 + 8, shieldRatio, "rgba(250, 204, 21, 1)", 3);
+  drawPlayerTimerRing(ctx, x, y, size / 2 + 13, hitRatio, "rgba(250, 204, 21, 0.88)", 2);
+  drawPlayerTimerRing(ctx, x, y, size / 2 + 18, slowRatio, "rgba(168, 85, 247, 0.95)", 3);
 
-  if (shieldActive) {
-    ctx.strokeStyle = "rgba(253, 224, 71, 0.75)";
-    ctx.lineWidth = 2;
-    ctx.beginPath();
-    ctx.arc(x, y, size / 2 + 11, 0, Math.PI * 2);
-    ctx.stroke();
-  }
-
+  ctx.save();
   ctx.fillStyle = "#111827";
   ctx.beginPath();
   ctx.arc(x - 7, y - 4, 2.5, 0, Math.PI * 2);
@@ -727,18 +844,21 @@ function drawFallbackPlayer(ctx, state, shieldActive) {
   ctx.restore();
 }
 
-function drawPlayer(ctx, state, avatar) {
-  const blink = performance.now() < state.player.invincibleUntil && Math.floor(performance.now() / 100) % 2 === 0;
-  if (blink) return;
+function drawPlayer(ctx, state, avatar, slowRatio, externalHitRatio) {
+  const now = performance.now();
+  const hitActive = now < state.player.invincibleUntil;
+  const blink = hitActive && Math.floor(now / 120) % 2 === 0;
+  const shieldActive = now < state.player.shieldUntil;
+  const shieldRatio = shieldActive ? (state.player.shieldUntil - now) / SHIELD_DURATION_MS : 0;
+  const hitRatio = externalHitRatio ?? (hitActive ? (state.player.invincibleUntil - now) / HIT_INVINCIBLE_MS : 0);
 
-  const shieldActive = performance.now() < state.player.shieldUntil;
-
-  if (avatar.ready && avatar.image?.complete && avatar.image.naturalWidth > 0) {
+  if (!blink && avatar.ready && avatar.image?.complete && avatar.image.naturalWidth > 0) {
     ctx.save();
     if (shieldActive) {
       ctx.shadowBlur = 44;
       ctx.shadowColor = "rgba(250, 204, 21, 1)";
     }
+    ctx.globalAlpha = hitActive ? 0.55 : 1;
     ctx.beginPath();
     ctx.arc(state.player.x, state.player.y, state.player.size / 2 + 4, 0, Math.PI * 2);
     ctx.clip();
@@ -751,23 +871,13 @@ function drawPlayer(ctx, state, avatar) {
     );
     ctx.restore();
 
-    ctx.strokeStyle = shieldActive ? "rgba(250, 204, 21, 1)" : "rgba(255,255,255,0.85)";
-    ctx.lineWidth = shieldActive ? 3 : 2;
-    ctx.beginPath();
-    ctx.arc(state.player.x, state.player.y, state.player.size / 2 + 6, 0, Math.PI * 2);
-    ctx.stroke();
-
-    if (shieldActive) {
-      ctx.strokeStyle = "rgba(253, 224, 71, 0.82)";
-      ctx.lineWidth = 2;
-      ctx.beginPath();
-      ctx.arc(state.player.x, state.player.y, state.player.size / 2 + 11, 0, Math.PI * 2);
-      ctx.stroke();
-    }
+    drawPlayerTimerRing(ctx, state.player.x, state.player.y, state.player.size / 2 + 8, shieldRatio, "rgba(250, 204, 21, 1)", 3);
+    drawPlayerTimerRing(ctx, state.player.x, state.player.y, state.player.size / 2 + 13, hitRatio, "rgba(250, 204, 21, 0.88)", 2);
+    drawPlayerTimerRing(ctx, state.player.x, state.player.y, state.player.size / 2 + 18, slowRatio, "rgba(168, 85, 247, 0.95)", 3);
     return;
   }
 
-  drawFallbackPlayer(ctx, state, shieldActive);
+  drawFallbackPlayer(ctx, state, shieldActive, hitActive, shieldRatio, hitRatio, slowRatio);
 }
 
 function drawProjectile(ctx, projectile, projectileImages) {
@@ -781,15 +891,20 @@ function drawProjectile(ctx, projectile, projectileImages) {
     ? "rgba(244, 63, 94, 0.10)"
     : projectile.kind === "shield"
       ? "rgba(250, 204, 21, 0.16)"
-      : projectile.kind === "rainbow"
-        ? "rgba(59, 130, 246, 0.14)"
-        : "rgba(244, 63, 94, 0.10)";
+      : projectile.kind === "skill"
+        ? "rgba(125, 211, 252, 0.18)"
+        : projectile.kind === "rainbow"
+          ? "rgba(59, 130, 246, 0.14)"
+          : "rgba(244, 63, 94, 0.10)";
   ctx.arc(0, 0, projectile.r + 9, 0, Math.PI * 2);
   ctx.fill();
 
   if (projectile.kind === "shield") {
     ctx.shadowBlur = 20;
     ctx.shadowColor = "rgba(250, 204, 21, 0.95)";
+  } else if (projectile.kind === "skill") {
+    ctx.shadowBlur = 20;
+    ctx.shadowColor = "rgba(125, 211, 252, 0.95)";
   } else if (projectile.kind === "rainbow") {
     ctx.shadowBlur = 18;
     ctx.shadowColor = "rgba(147, 197, 253, 0.9)";
@@ -799,14 +914,14 @@ function drawProjectile(ctx, projectile, projectileImages) {
     ctx.drawImage(image, -projectile.r, -projectile.r, projectile.r * 2, projectile.r * 2);
   } else {
     ctx.beginPath();
-    ctx.fillStyle = projectile.color || (projectile.kind === "shield" ? "#facc15" : projectile.kind === "rainbow" ? "#60a5fa" : "#f43f5e");
+    ctx.fillStyle = projectile.color || (projectile.kind === "shield" ? "#facc15" : projectile.kind === "skill" ? "#7dd3fc" : projectile.kind === "rainbow" ? "#60a5fa" : "#f43f5e");
     ctx.arc(0, 0, projectile.r, 0, Math.PI * 2);
     ctx.fill();
     ctx.fillStyle = "white";
     ctx.font = "bold 20px sans-serif";
     ctx.textAlign = "center";
     ctx.textBaseline = "middle";
-    ctx.fillText(projectile.kind === "heart" ? "+" : projectile.kind === "shield" ? "S" : projectile.kind === "rainbow" ? "R" : projectile.char, 0, 1);
+    ctx.fillText(projectile.kind === "heart" ? "+" : projectile.kind === "shield" ? "S" : projectile.kind === "skill" ? "D" : projectile.kind === "rainbow" ? "R" : projectile.char, 0, 1);
   }
 
   ctx.shadowBlur = 0;
@@ -835,6 +950,72 @@ function drawRainbowText(ctx, untilTime) {
   ctx.restore();
 }
 
+function drawDashTrail(ctx, player) {
+  const now = performance.now();
+  if (now >= player.dashTrailUntil) return;
+  const ratio = (player.dashTrailUntil - now) / DASH_TRAIL_MS;
+
+  ctx.save();
+  ctx.translate(player.x, player.y);
+  ctx.rotate(player.dashTrailAngle);
+  ctx.globalAlpha = Math.max(0, ratio);
+
+  const gradient = ctx.createLinearGradient(-DASH_DISTANCE, 0, 20, 0);
+  gradient.addColorStop(0, "rgba(125, 211, 252, 0)");
+  gradient.addColorStop(0.35, "rgba(125, 211, 252, 0.18)");
+  gradient.addColorStop(1, "rgba(224, 242, 254, 0.95)");
+  ctx.fillStyle = gradient;
+  ctx.beginPath();
+  ctx.moveTo(-DASH_DISTANCE, -22);
+  ctx.lineTo(-8, -8);
+  ctx.lineTo(-8, 8);
+  ctx.lineTo(-DASH_DISTANCE, 22);
+  ctx.closePath();
+  ctx.fill();
+
+  ctx.strokeStyle = "rgba(240, 249, 255, 0.95)";
+  ctx.lineWidth = 8;
+  ctx.lineCap = "round";
+  const streaks = [
+    [-78, -10, -38, -10],
+    [-62, 2, -22, 2],
+    [-98, 14, -70, 14],
+    [-118, -2, -86, -2],
+    [-132, 18, -112, 18],
+  ];
+  streaks.forEach(([x1, y1, x2, y2]) => {
+    ctx.beginPath();
+    ctx.moveTo(x1, y1);
+    ctx.lineTo(x2, y2);
+    ctx.stroke();
+  });
+
+  ctx.fillStyle = "rgba(255,255,255,0.9)";
+  [[-72, -22], [-90, 8], [-54, 16], [-108, -14]].forEach(([x, y]) => {
+    ctx.beginPath();
+    ctx.arc(x, y, 2.2, 0, Math.PI * 2);
+    ctx.fill();
+  });
+  ctx.restore();
+}
+
+function drawPopups(ctx, popups) {
+  const now = performance.now();
+  popups.forEach((popup) => {
+    const ratio = Math.max(0, (popup.until - now) / HEART_POPUP_MS);
+    ctx.save();
+    ctx.globalAlpha = ratio;
+    ctx.fillStyle = popup.color;
+    ctx.font = "bold 28px sans-serif";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.shadowBlur = 12;
+    ctx.shadowColor = popup.color;
+    ctx.fillText(popup.text, popup.x, popup.y);
+    ctx.restore();
+  });
+}
+
 function drawGame(ctx, state, phase, avatar, projectileImages) {
   ctx.clearRect(0, 0, WIDTH, HEIGHT);
 
@@ -844,35 +1025,37 @@ function drawGame(ctx, state, phase, avatar, projectileImages) {
   ctx.fillStyle = gradient;
   ctx.fillRect(0, 0, WIDTH, HEIGHT);
 
-  const bonusLeftMs = Math.max(0, state.bonusModeUntil - performance.now());
+  const now = performance.now();
+  const bonusLeftMs = Math.max(0, state.bonusModeUntil - now);
   const bonusRatio = bonusLeftMs > 0 ? bonusLeftMs / BONUS_PATTERN_DURATION : 0;
+  const shieldLeftMs = Math.max(0, state.player.shieldUntil - now);
+  const shieldRatio = shieldLeftMs > 0 ? shieldLeftMs / SHIELD_DURATION_MS : 0;
+  const slowRatio = state.slowModeMeterMs / SLOW_MODE_MAX_MS;
+  const hitLeftMs = Math.max(0, state.player.invincibleUntil - now);
+  const hitRatio = hitLeftMs > 0 ? hitLeftMs / HIT_INVINCIBLE_MS : 0;
 
   ctx.strokeStyle = bonusRatio > 0
     ? "rgba(250, 204, 21, 0.95)"
     : state.slowMode
-      ? "rgba(96,165,250,0.24)"
-      : "rgba(255,255,255,0.12)";
+      ? "rgba(168, 85, 247, 0.32)"
+      : shieldRatio > 0
+        ? "rgba(250, 204, 21, 0.22)"
+        : "rgba(255,255,255,0.12)";
   ctx.lineWidth = bonusRatio > 0 ? 6 : 4;
   ctx.strokeRect(6, 6, WIDTH - 12, HEIGHT - 12);
 
+  
+  if (shieldRatio > 0) {
+    drawRectProgressBorder(ctx, "rgba(250, 204, 21, 0.95)", shieldRatio, 5, 18, 16);
+  }
   if (bonusRatio > 0) {
-    const perimeter = 2 * ((WIDTH - 12) + (HEIGHT - 12));
-    ctx.save();
-    ctx.beginPath();
-    ctx.setLineDash([perimeter * bonusRatio, perimeter]);
-    ctx.lineDashOffset = 0;
-    ctx.strokeStyle = "rgba(253, 224, 71, 1)";
-    ctx.lineWidth = 8;
-    ctx.shadowBlur = 24;
-    ctx.shadowColor = "rgba(250, 204, 21, 0.95)";
-    ctx.strokeRect(6, 6, WIDTH - 12, HEIGHT - 12);
-    ctx.restore();
+    drawRectProgressBorder(ctx, "rgba(253, 224, 71, 1)", bonusRatio, 8, 6, 24);
   }
 
   for (let i = 0; i < 40; i += 1) {
     const x = (i * 137) % WIDTH;
     const y = (i * 97) % HEIGHT;
-    ctx.fillStyle = state.slowMode ? "rgba(96,165,250,0.08)" : "rgba(255,255,255,0.05)";
+    ctx.fillStyle = state.slowMode ? "rgba(168, 85, 247, 0.08)" : "rgba(255,255,255,0.05)";
     ctx.beginPath();
     ctx.arc(x, y, 1.5, 0, Math.PI * 2);
     ctx.fill();
@@ -882,19 +1065,23 @@ function drawGame(ctx, state, phase, avatar, projectileImages) {
     drawProjectile(ctx, projectile, projectileImages);
   }
 
-  drawPlayer(ctx, state, avatar);
+  drawDashTrail(ctx, state.player);
+  const playerSlowRatio = slowRatio;
+  drawPlayer(ctx, state, avatar, playerSlowRatio, hitRatio);
+  drawPopups(ctx, state.popups);
   drawRainbowText(ctx, state.rainbowTextUntil);
 
   ctx.fillStyle = "rgba(255,255,255,0.9)";
   ctx.font = "600 18px sans-serif";
   const hearts = "❤️".repeat(Math.max(state.lives, 0));
   ctx.fillText(`LIFE: ${hearts || "없음"}`, 22, 34);
-  ctx.fillText(`SCORE: ${state.score}`, 22, 60);
+  ctx.fillText(`SCORE: ${Math.floor(state.score)}`, 22, 60);
   ctx.fillText(`TIME: ${(state.elapsedMs / 1000).toFixed(1)}s`, 22, 86);
-  ctx.fillText(`SLOW: ${state.slowMode ? "ON" : "OFF"}`, 22, 112);
+  ctx.fillText(`SLOW: ${state.slowMode ? "ON" : "OFF"} (${(state.slowModeMeterMs / 1000).toFixed(1)}s)`, 22, 112);
+  ctx.fillText(`DASH: ${state.skillCount}`, 22, 138);
   if (bonusRatio > 0) {
     ctx.fillStyle = "rgba(253, 224, 71, 0.98)";
-    ctx.fillText(`BONUS: ${(bonusLeftMs / 1000).toFixed(1)}s`, 22, 138);
+    ctx.fillText(`BONUS: ${(bonusLeftMs / 1000).toFixed(1)}s`, 22, 164);
   }
 
   if (phase === "ready") {
@@ -905,7 +1092,7 @@ function drawGame(ctx, state, phase, avatar, projectileImages) {
     ctx.font = "700 34px sans-serif";
     ctx.fillText("알파벳 피하기", WIDTH / 2, HEIGHT / 2 - 18);
     ctx.font = "400 20px sans-serif";
-    ctx.fillText("Shift: 가속 / Space: 슬로우 모드 / 하트·실드·무지개를 먹어보세요", WIDTH / 2, HEIGHT / 2 + 24);
+    ctx.fillText("Shift: 대시 / Space: 슬로우 모드 / 하트·실드·무지개를 먹어보세요", WIDTH / 2, HEIGHT / 2 + 24);
     ctx.textAlign = "start";
   }
 }
@@ -930,9 +1117,11 @@ function runDevTests() {
 
   const heart = createPickup("heart", 1000);
   const shield = createPickup("shield", 1000);
+  const skill = createPickup("skill", 1000);
   const rainbow = createPickup("rainbow", 1000);
   console.assert(heart.kind === "heart", "heart pickup should be created");
   console.assert(shield.kind === "shield", "shield pickup should be created");
+  console.assert(skill.kind === "skill", "skill pickup should be created");
   console.assert(rainbow.kind === "rainbow", "rainbow pickup should be created");
 
   const bonusState = createInitialGameState();
@@ -949,14 +1138,31 @@ function runDevTests() {
   console.assert(bonusCollisionState.score >= scoreBefore + BONUS_COLLISION_SCORE, "bonus mode collision should add bonus score");
 
   const images = buildProjectileImages();
-  console.assert(Object.keys(images).length === LANGUAGES.length + 3, "Each language plus heart, shield, rainbow should have generated images");
+  console.assert(Object.keys(images).length === LANGUAGES.length + 4, "Each language plus heart, shield, skill, rainbow should have generated images");
+
+  const dashState = createInitialGameState();
+  const beforeDashX = dashState.player.x;
+  updateGame(dashState, 0.016, 1000, { Shift: true, ArrowRight: true }, () => {});
+  console.assert(dashState.skillCount === INITIAL_SKILL_COUNT - 1, "dash should consume one skill count");
+  console.assert(dashState.player.x > beforeDashX + 50, "dash should move player a short distance");
+
+  const skillPickupState = createInitialGameState();
+  skillPickupState.skillCount = 1;
+  skillPickupState.projectiles = [{ id: "skill-hit", kind: "skill", x: WIDTH / 2, y: HEIGHT / 2, vx: 0, vy: 0, r: SKILL_RADIUS, angle: 0, spin: 0, label: "__skill" }];
+  updateGame(skillPickupState, 0.016, 1000, {}, () => {});
+  console.assert(skillPickupState.skillCount === 2, "skill pickup should increase dash count");
 
   console.assert(normalizeKey(" ") === "Space", "space key should normalize");
   console.assert(normalizeKey("Shift") === "Shift", "shift key should stay unchanged");
 
   const slowScoreState = createInitialGameState();
   updateGame(slowScoreState, 1, 1000, { Space: true }, () => {});
-  console.assert(slowScoreState.score === 2, "slow mode should award 5 points per slowed second");
+  console.assert(Math.floor(slowScoreState.score) === 5, "slow mode should award 5 points per real second");
+
+  const slowRechargeState = createInitialGameState();
+  slowRechargeState.slowModeMeterMs = 0;
+  updateGame(slowRechargeState, 1, 1000, {}, () => {});
+  console.assert(slowRechargeState.slowModeMeterMs === 1000, "slow meter should recharge while off");
 
   const shieldHeartState = createInitialGameState();
   shieldHeartState.player.shieldUntil = 5000;
@@ -964,6 +1170,7 @@ function runDevTests() {
   const livesBeforeHeart = shieldHeartState.lives;
   updateGame(shieldHeartState, 0.016, 1000, {}, () => {});
   console.assert(shieldHeartState.lives === livesBeforeHeart + 1, "heart pickup should still increase life while shield is active");
+  console.assert(shieldHeartState.popups.length === 1, "heart pickup should create popup text");
 }
 
 if (typeof window !== "undefined") {
