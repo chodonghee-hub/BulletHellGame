@@ -2,9 +2,9 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 
 const AVATAR = "/mnt/data/submarine.jpg";
 
-const WIDTH = 900;
-const HEIGHT = 560;
-const PLAYER_SIZE = 44;
+const WIDTH = 1000;
+const HEIGHT = 600;
+const PLAYER_SIZE = 400;
 const PROJECTILE_RADIUS = 24;
 const INITIAL_LIVES = 5;
 const MAX_LIVES = 10;
@@ -20,6 +20,9 @@ const SKILL_RADIUS = 18;
 const DASH_DISTANCE = 120;
 const DASH_TRAIL_MS = 180;
 const SHIELD_DURATION_MS = 3000;
+const FREEZE_RADIUS = 18;
+const OBSTACLE_SPEED_MIN_MULTIPLIER = 0.35;
+const OBSTACLE_SPEED_REDUCTION_STEP = 0.12;
 const HIT_INVINCIBLE_MS = 1500;
 const SLOW_MODE_MAX_MS = 5000;
 const HEART_POPUP_MS = 300;
@@ -143,6 +146,17 @@ function createSkillDataUrl() {
   return `data:image/svg+xml;charset=UTF-8,${encodeURIComponent(svg)}`;
 }
 
+function createFreezeDataUrl() {
+  const svg = `
+    <svg xmlns="http://www.w3.org/2000/svg" width="72" height="72" viewBox="0 0 72 72">
+      <circle cx="36" cy="36" r="31" fill="#0f172a" stroke="rgba(255,255,255,0.22)" stroke-width="2" />
+      <path d="M36 15v42M25.5 21l21 30M46.5 21l-21 30M18 36h36" stroke="#7dd3fc" stroke-width="5" stroke-linecap="round"/>
+      <circle cx="36" cy="36" r="7" fill="#bae6fd"/>
+    </svg>
+  `;
+  return `data:image/svg+xml;charset=UTF-8,${encodeURIComponent(svg)}`;
+}
+
 function makeImage(src) {
   const img = new Image();
   img.src = src;
@@ -158,6 +172,7 @@ function buildProjectileImages() {
   result.__shield = makeImage(createShieldDataUrl());
   result.__rainbow = makeImage(createRainbowDataUrl());
   result.__skill = makeImage(createSkillDataUrl());
+  result.__freeze = makeImage(createFreezeDataUrl());
   return result;
 }
 
@@ -203,10 +218,10 @@ function createPickup(kind, elapsedMs) {
   const dx = centerX - spawn.x + (Math.random() - 0.5) * 180;
   const dy = centerY - spawn.y + (Math.random() - 0.5) * 180;
   const len = Math.hypot(dx, dy) || 1;
-  const baseSpeed = kind === "heart" ? 95 : kind === "shield" ? 105 : kind === "skill" ? 110 : 115;
+  const baseSpeed = kind === "heart" ? 95 : kind === "shield" ? 105 : kind === "skill" ? 110 : kind === "freeze" ? 100 : 115;
   const speed = baseSpeed * Math.min(1 + elapsedMs / 40000, 1.6);
-  const r = kind === "heart" ? HEART_RADIUS : kind === "shield" ? SHIELD_RADIUS : kind === "skill" ? SKILL_RADIUS : RAINBOW_RADIUS;
-  const label = kind === "heart" ? "__heart" : kind === "shield" ? "__shield" : kind === "skill" ? "__skill" : "__rainbow";
+  const r = kind === "heart" ? HEART_RADIUS : kind === "shield" ? SHIELD_RADIUS : kind === "skill" ? SKILL_RADIUS : kind === "freeze" ? FREEZE_RADIUS : RAINBOW_RADIUS;
+  const label = kind === "heart" ? "__heart" : kind === "shield" ? "__shield" : kind === "skill" ? "__skill" : kind === "freeze" ? "__freeze" : "__rainbow";
 
   return {
     id: Math.random().toString(36).slice(2),
@@ -229,7 +244,7 @@ function createInitialGameState() {
       y: HEIGHT / 2,
       size: PLAYER_SIZE,
       invincibleUntil: 0,
-      shieldUntil: 0,
+      shieldRemainingMs: 0,
       dashTrailUntil: 0,
       dashTrailAngle: 0,
     },
@@ -243,6 +258,7 @@ function createInitialGameState() {
     shieldSpawnTimer: 0,
     rainbowSpawnTimer: 0,
     skillSpawnTimer: 0,
+    freezeSpawnTimer: 0,
     running: false,
     endingMessage: randomItem(END_MESSAGES),
     slowMode: false,
@@ -251,6 +267,7 @@ function createInitialGameState() {
     bonusModeUntil: 0,
     bonusShieldQueued: false,
     skillCount: INITIAL_SKILL_COUNT,
+    obstacleSpeedMultiplier: 1,
     shiftPressedLastFrame: false,
   };
 }
@@ -299,6 +316,12 @@ function App() {
   useEffect(() => {
     const trackedKeys = ["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "Shift", " ", "Space", "Spacebar"];
 
+    const clearPressedKeys = () => {
+      keysRef.current = {};
+      gameRef.current.shiftPressedLastFrame = false;
+      gameRef.current.slowMode = false;
+    };
+
     const down = (e) => {
       if (trackedKeys.includes(e.key)) {
         e.preventDefault();
@@ -313,12 +336,26 @@ function App() {
       }
     };
 
+    const onBlur = () => {
+      clearPressedKeys();
+    };
+
+    const onVisibilityChange = () => {
+      if (document.hidden) {
+        clearPressedKeys();
+      }
+    };
+
     window.addEventListener("keydown", down);
     window.addEventListener("keyup", up);
+    window.addEventListener("blur", onBlur);
+    document.addEventListener("visibilitychange", onVisibilityChange);
 
     return () => {
       window.removeEventListener("keydown", down);
       window.removeEventListener("keyup", up);
+      window.removeEventListener("blur", onBlur);
+      document.removeEventListener("visibilitychange", onVisibilityChange);
     };
   }, []);
 
@@ -426,7 +463,7 @@ function App() {
             </p>
           )}
           <p className="text-xs text-zinc-500 mt-2 px-1">
-            Shift + 방향키: 대시 스킬 / Space: 시간과 탄막, 플레이어 모두 감속 / 하트: 라이프 +1 / 실드: 3초 무적 / 무지개: 화면 탄막 제거 / 스킬 탄막: 대시 +1 / 라이프 10: 히든 보너스 패턴
+            Shift + 방향키: 대시 스킬 / Space: 시간과 탄막, 플레이어 모두 감속 / 하트: 라이프 +1 / 실드: 3초 무적(슬로우 중 감소 속도 50%) / 무지개: 화면 탄막 제거 / 스킬 탄막: 대시 +1 / 감속 탄막: 장애물 속도 감소 / 라이프 10: 히든 보너스 패턴
           </p>
         </div>
 
@@ -445,6 +482,8 @@ function App() {
               <p>• Space는 시작 시 5초 충전 상태이며, 사용 중 소모되고 꺼져 있을 때 다시 충전됩니다.</p>
               <p>• 하트 이미지를 먹으면 라이프가 1 증가하고 ❤️+1 팝업이 뜹니다.</p>
               <p>• 실드 이미지를 먹으면 3초 동안 무적이고 노란 그림자와 타이머 링이 생깁니다.</p>
+              <p>• 슬로우 모드 중에는 실드 남은 시간 감소 속도가 50%로 느려집니다.</p>
+              <p>• 감속 탄막을 먹으면 장애물 속도가 조금 감소하며, 속도는 항상 0보다 크게 유지됩니다.</p>
               <p>• 피격 시 1.5초간 깜빡이며 무적이고 노란 타이머 링이 표시됩니다.</p>
               <p>• 무지개 이미지를 먹으면 RAINBOW 텍스트가 뜨고 현재 화면의 일반 탄막이 모두 제거됩니다.</p>
               <p>• 플레이 중에는 다시하기 버튼이 비활성화됩니다.</p>
@@ -534,7 +573,7 @@ function StatusPanel({ phase, state, finalScore, finalTime }) {
   const score = phase === "gameover" ? Math.floor(finalScore) : Math.floor(state.score);
   const time = phase === "gameover" ? finalTime : state.elapsedMs / 1000;
   const now = performance.now();
-  const shieldLeft = Math.max(0, (state.player.shieldUntil - now) / 1000);
+  const shieldLeft = Math.max(0, state.player.shieldRemainingMs / 1000);
   const bonusLeft = Math.max(0, (state.bonusModeUntil - now) / 1000);
   const hitInvincibleLeft = Math.max(0, (state.player.invincibleUntil - now) / 1000);
   const slowLeft = Math.max(0, state.slowModeMeterMs / 1000);
@@ -570,6 +609,10 @@ function StatusPanel({ phase, state, finalScore, finalTime }) {
         <span>{state.skillCount}</span>
       </div>
       <div className="flex items-center justify-between">
+        <span className="text-zinc-400">장애물 속도</span>
+        <span>{Math.round(state.obstacleSpeedMultiplier * 100)}%</span>
+      </div>
+      <div className="flex items-center justify-between">
         <span className="text-zinc-400">실드</span>
         <span>{shieldLeft > 0 ? `${shieldLeft.toFixed(1)}초` : "없음"}</span>
       </div>
@@ -587,6 +630,15 @@ function StatusPanel({ phase, state, finalScore, finalTime }) {
 }
 
 function updateGame(state, rawDt, now, activeKeys, onGameOver) {
+  const wantsSlowMode = !!activeKeys.Space;
+  const isSlowMode = wantsSlowMode && state.slowModeMeterMs > 0;
+  state.slowMode = isSlowMode;
+
+  if (state.player.shieldRemainingMs > 0) {
+    const shieldDecay = rawDt * 1000 * (isSlowMode ? 0.5 : 1);
+    state.player.shieldRemainingMs = Math.max(0, state.player.shieldRemainingMs - shieldDecay);
+  }
+
   state.popups = state.popups
     .map((popup) => ({ ...popup, y: popup.y - 20 * rawDt }))
     .filter((popup) => now < popup.until);
@@ -594,10 +646,6 @@ function updateGame(state, rawDt, now, activeKeys, onGameOver) {
   if (!activeKeys.Space && state.slowModeMeterMs < SLOW_MODE_MAX_MS) {
     state.slowModeMeterMs = Math.min(SLOW_MODE_MAX_MS, state.slowModeMeterMs + rawDt * 1000);
   }
-
-  const wantsSlowMode = !!activeKeys.Space;
-  const isSlowMode = wantsSlowMode && state.slowModeMeterMs > 0;
-  state.slowMode = isSlowMode;
 
   const timeScale = isSlowMode ? 0.5 : 1;
   const dt = rawDt * timeScale;
@@ -651,7 +699,7 @@ function updateGame(state, rawDt, now, activeKeys, onGameOver) {
   state.score += rawDt * pointsPerSecond;
 
   if (!wasBonusActive && state.bonusShieldQueued) {
-    state.player.shieldUntil = Math.max(state.player.shieldUntil, now) + SHIELD_DURATION_MS;
+    state.player.shieldRemainingMs += SHIELD_DURATION_MS;
     state.bonusShieldQueued = false;
   }
 
@@ -694,11 +742,17 @@ function updateGame(state, rawDt, now, activeKeys, onGameOver) {
     state.projectiles.push(createPickup("skill", state.elapsedMs));
   }
 
+  state.freezeSpawnTimer += dt;
+  if (state.freezeSpawnTimer >= 15) {
+    state.freezeSpawnTimer = 0;
+    state.projectiles.push(createPickup("freeze", state.elapsedMs));
+  }
+
   state.projectiles = state.projectiles
     .map((projectile) => ({
       ...projectile,
-      x: projectile.x + projectile.vx * dt,
-      y: projectile.y + projectile.vy * dt,
+      x: projectile.x + projectile.vx * dt * state.obstacleSpeedMultiplier,
+      y: projectile.y + projectile.vy * dt * state.obstacleSpeedMultiplier,
       angle: projectile.angle + projectile.spin * dt,
     }))
     .filter(
@@ -710,7 +764,7 @@ function updateGame(state, rawDt, now, activeKeys, onGameOver) {
     );
 
   const nextProjectiles = [];
-  const shieldActive = now < state.player.shieldUntil;
+  const shieldActive = state.player.shieldRemainingMs > 0;
 
   for (const projectile of state.projectiles) {
     const dx = projectile.x - state.player.x;
@@ -742,12 +796,17 @@ function updateGame(state, rawDt, now, activeKeys, onGameOver) {
     }
 
     if (projectile.kind === "shield") {
-      state.player.shieldUntil = Math.max(state.player.shieldUntil, now) + SHIELD_DURATION_MS;
+      state.player.shieldRemainingMs += SHIELD_DURATION_MS;
       continue;
     }
 
     if (projectile.kind === "skill") {
       state.skillCount += 1;
+      continue;
+    }
+
+    if (projectile.kind === "freeze") {
+      state.obstacleSpeedMultiplier = Math.max(OBSTACLE_SPEED_MIN_MULTIPLIER, state.obstacleSpeedMultiplier - OBSTACLE_SPEED_REDUCTION_STEP);
       continue;
     }
 
@@ -848,8 +907,8 @@ function drawPlayer(ctx, state, avatar, slowRatio, externalHitRatio) {
   const now = performance.now();
   const hitActive = now < state.player.invincibleUntil;
   const blink = hitActive && Math.floor(now / 120) % 2 === 0;
-  const shieldActive = now < state.player.shieldUntil;
-  const shieldRatio = shieldActive ? (state.player.shieldUntil - now) / SHIELD_DURATION_MS : 0;
+  const shieldActive = state.player.shieldRemainingMs > 0;
+  const shieldRatio = shieldActive ? Math.min(1, state.player.shieldRemainingMs / SHIELD_DURATION_MS) : 0;
   const hitRatio = externalHitRatio ?? (hitActive ? (state.player.invincibleUntil - now) / HIT_INVINCIBLE_MS : 0);
 
   if (!blink && avatar.ready && avatar.image?.complete && avatar.image.naturalWidth > 0) {
@@ -893,7 +952,9 @@ function drawProjectile(ctx, projectile, projectileImages) {
       ? "rgba(250, 204, 21, 0.16)"
       : projectile.kind === "skill"
         ? "rgba(125, 211, 252, 0.18)"
-        : projectile.kind === "rainbow"
+        : projectile.kind === "freeze"
+          ? "rgba(56, 189, 248, 0.18)"
+          : projectile.kind === "rainbow"
           ? "rgba(59, 130, 246, 0.14)"
           : "rgba(244, 63, 94, 0.10)";
   ctx.arc(0, 0, projectile.r + 9, 0, Math.PI * 2);
@@ -905,6 +966,9 @@ function drawProjectile(ctx, projectile, projectileImages) {
   } else if (projectile.kind === "skill") {
     ctx.shadowBlur = 20;
     ctx.shadowColor = "rgba(125, 211, 252, 0.95)";
+  } else if (projectile.kind === "freeze") {
+    ctx.shadowBlur = 20;
+    ctx.shadowColor = "rgba(56, 189, 248, 0.95)";
   } else if (projectile.kind === "rainbow") {
     ctx.shadowBlur = 18;
     ctx.shadowColor = "rgba(147, 197, 253, 0.9)";
@@ -914,14 +978,14 @@ function drawProjectile(ctx, projectile, projectileImages) {
     ctx.drawImage(image, -projectile.r, -projectile.r, projectile.r * 2, projectile.r * 2);
   } else {
     ctx.beginPath();
-    ctx.fillStyle = projectile.color || (projectile.kind === "shield" ? "#facc15" : projectile.kind === "skill" ? "#7dd3fc" : projectile.kind === "rainbow" ? "#60a5fa" : "#f43f5e");
+    ctx.fillStyle = projectile.color || (projectile.kind === "shield" ? "#facc15" : projectile.kind === "skill" ? "#7dd3fc" : projectile.kind === "freeze" ? "#38bdf8" : projectile.kind === "rainbow" ? "#60a5fa" : "#f43f5e");
     ctx.arc(0, 0, projectile.r, 0, Math.PI * 2);
     ctx.fill();
     ctx.fillStyle = "white";
     ctx.font = "bold 20px sans-serif";
     ctx.textAlign = "center";
     ctx.textBaseline = "middle";
-    ctx.fillText(projectile.kind === "heart" ? "+" : projectile.kind === "shield" ? "S" : projectile.kind === "skill" ? "D" : projectile.kind === "rainbow" ? "R" : projectile.char, 0, 1);
+    ctx.fillText(projectile.kind === "heart" ? "+" : projectile.kind === "shield" ? "S" : projectile.kind === "skill" ? "D" : projectile.kind === "freeze" ? "F" : projectile.kind === "rainbow" ? "R" : projectile.char, 0, 1);
   }
 
   ctx.shadowBlur = 0;
@@ -1028,8 +1092,8 @@ function drawGame(ctx, state, phase, avatar, projectileImages) {
   const now = performance.now();
   const bonusLeftMs = Math.max(0, state.bonusModeUntil - now);
   const bonusRatio = bonusLeftMs > 0 ? bonusLeftMs / BONUS_PATTERN_DURATION : 0;
-  const shieldLeftMs = Math.max(0, state.player.shieldUntil - now);
-  const shieldRatio = shieldLeftMs > 0 ? shieldLeftMs / SHIELD_DURATION_MS : 0;
+  const shieldLeftMs = Math.max(0, state.player.shieldRemainingMs);
+  const shieldRatio = shieldLeftMs > 0 ? Math.min(1, shieldLeftMs / SHIELD_DURATION_MS) : 0;
   const slowRatio = state.slowModeMeterMs / SLOW_MODE_MAX_MS;
   const hitLeftMs = Math.max(0, state.player.invincibleUntil - now);
   const hitRatio = hitLeftMs > 0 ? hitLeftMs / HIT_INVINCIBLE_MS : 0;
@@ -1118,10 +1182,12 @@ function runDevTests() {
   const heart = createPickup("heart", 1000);
   const shield = createPickup("shield", 1000);
   const skill = createPickup("skill", 1000);
+  const freeze = createPickup("freeze", 1000);
   const rainbow = createPickup("rainbow", 1000);
   console.assert(heart.kind === "heart", "heart pickup should be created");
   console.assert(shield.kind === "shield", "shield pickup should be created");
   console.assert(skill.kind === "skill", "skill pickup should be created");
+  console.assert(freeze.kind === "freeze", "freeze pickup should be created");
   console.assert(rainbow.kind === "rainbow", "rainbow pickup should be created");
 
   const bonusState = createInitialGameState();
@@ -1138,7 +1204,7 @@ function runDevTests() {
   console.assert(bonusCollisionState.score >= scoreBefore + BONUS_COLLISION_SCORE, "bonus mode collision should add bonus score");
 
   const images = buildProjectileImages();
-  console.assert(Object.keys(images).length === LANGUAGES.length + 4, "Each language plus heart, shield, skill, rainbow should have generated images");
+  console.assert(Object.keys(images).length === LANGUAGES.length + 5, "Each language plus heart, shield, skill, freeze, rainbow should have generated images");
 
   const dashState = createInitialGameState();
   const beforeDashX = dashState.player.x;
@@ -1164,8 +1230,31 @@ function runDevTests() {
   updateGame(slowRechargeState, 1, 1000, {}, () => {});
   console.assert(slowRechargeState.slowModeMeterMs === 1000, "slow meter should recharge while off");
 
+  const blurResetState = createInitialGameState();
+  blurResetState.shiftPressedLastFrame = true;
+  const simulatedKeysRef = { ArrowLeft: true, Space: true, Shift: true };
+  Object.keys(simulatedKeysRef).forEach((key) => delete simulatedKeysRef[key]);
+  blurResetState.shiftPressedLastFrame = false;
+  blurResetState.slowMode = false;
+  console.assert(Object.keys(simulatedKeysRef).length === 0, "blur handling should clear pressed keys");
+
+  const slowShieldState = createInitialGameState();
+  slowShieldState.projectiles = [{ id: "shield-hit", kind: "shield", x: WIDTH / 2, y: HEIGHT / 2, vx: 0, vy: 0, r: SHIELD_RADIUS, angle: 0, spin: 0, label: "__shield" }];
+  updateGame(slowShieldState, 0.016, 1000, { Space: true }, () => {});
+  console.assert(slowShieldState.player.shieldRemainingMs > SHIELD_DURATION_MS - 30, "shield pickup during slow mode should still grant about 3 seconds");
+
+  const shieldDecayState = createInitialGameState();
+  shieldDecayState.player.shieldRemainingMs = SHIELD_DURATION_MS;
+  updateGame(shieldDecayState, 1, 1000, { Space: true }, () => {});
+  console.assert(shieldDecayState.player.shieldRemainingMs <= SHIELD_DURATION_MS - 490 && shieldDecayState.player.shieldRemainingMs >= SHIELD_DURATION_MS - 510, "shield should decay at half speed during slow mode");
+
+  const freezeState = createInitialGameState();
+  freezeState.projectiles = [{ id: "freeze-hit", kind: "freeze", x: WIDTH / 2, y: HEIGHT / 2, vx: 0, vy: 0, r: FREEZE_RADIUS, angle: 0, spin: 0, label: "__freeze" }];
+  updateGame(freezeState, 0.016, 1000, {}, () => {});
+  console.assert(freezeState.obstacleSpeedMultiplier < 1 && freezeState.obstacleSpeedMultiplier >= OBSTACLE_SPEED_MIN_MULTIPLIER, "freeze pickup should reduce obstacle speed but keep it positive");
+
   const shieldHeartState = createInitialGameState();
-  shieldHeartState.player.shieldUntil = 5000;
+  shieldHeartState.player.shieldRemainingMs = 5000;
   shieldHeartState.projectiles = [{ id: "heart-hit", kind: "heart", x: WIDTH / 2, y: HEIGHT / 2, vx: 0, vy: 0, r: HEART_RADIUS, angle: 0, spin: 0, label: "__heart" }];
   const livesBeforeHeart = shieldHeartState.lives;
   updateGame(shieldHeartState, 0.016, 1000, {}, () => {});
