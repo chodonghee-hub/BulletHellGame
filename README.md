@@ -1,4 +1,5 @@
 # GAME RULES
+🔗 <a href="https://bullet-hell-game.vercel.app/">_Bullet Hell Game 바로가기_</a>
 
 ## 1. 게임 개요
 
